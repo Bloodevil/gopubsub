@@ -1,7 +1,8 @@
 package main
 
 import (
-	"context"
+	"bytes"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,26 +10,31 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
 var upgrader websocket.Upgrader
 
-type ClientManager struct {
-	clients map[*Client]bool
-	broadcast chan []byte
-	register chan *Client
-	unregister chan *Client
-}
+var addr = flag.String("addr", ":8080", "http service address")
 
-func newClientManager() *Clientmanager {
-	return &Clientmanager{
-		broadcast:  make(chan []byte),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		clients:    make(map[*Client]bool),
-	}
+const (
+	writeWait      = 10 * time.Second
+	pongWait       = 60 * time.Second
+	pingPeriod     = (pongWait * 9) / 10
+	maxMessageSize = 512
+)
+
+var (
+	newline = []byte{'\n'}
+	space   = []byte{' '}
+)
+
+type Client struct {
+	manager *ClientManager
+
+	// The websocket connection.
+	conn *websocket.Conn
+	send chan []byte
 }
 
 func (cm *ClientManager) run() {
@@ -54,13 +60,6 @@ func (cm *ClientManager) run() {
 	}
 }
 
-type Client struct {
-	manager *ClientManager
-
-	// The websocket connection.
-	conn *websocket.Conn
-}
-
 func main() {
 	s := make(chan os.Signal, 1)
 	signal.Notify(s,
@@ -69,40 +68,25 @@ func main() {
 		syscall.SIGTERM,
 		syscall.SIGQUIT,
 		syscall.SIGKILL)
-	r := mux.NewRouter()
 
-    cm := newClientManager()
-    cm.run()
+	cm := newClientManager()
+	go cm.run()
 
-    upgrader.CheckOrigin = func(r *http.Request) bool { return true }
-	r.Path("/connect").Methods("GET").HandlerFunc(ConnectWebSocketHandler)
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
 
-	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", 6060),
-		Handler: r,
-	}
-	go func() {
-		if err := server.ListenAndServe(); err != nil {
-			fmt.Println("Running error")
-			fmt.Println(err)
-		}
-	}()
+	http.HandleFunc("/channel", func(w http.ResponseWriter, r *http.Request) {
+		ConnectWebSocketHandler(cm, w, r)
+	})
 
-	sig := <-s
-	fmt.Println("Get signal notification.")
-	fmt.Println(sig)
-	fmt.Println("Start to shutdown server. reset notification user list")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := server.Shutdown(ctx); err != nil {
-		fmt.Println("HTTP Server shutdown error")
+	if err := http.ListenAndServe(*addr, nil); err != nil {
+		fmt.Println("Running error")
 		fmt.Println(err)
 	}
+
 }
 
 // api
-func ConnectWebSocketHandler(w http.ResponseWriter, r *http.Request) {
+func ConnectWebSocketHandler(ClientManager *ClientManager, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println("Fail to upgrade %s", err)
@@ -110,7 +94,33 @@ func ConnectWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Println("success to get websocket")
 
-    client := &Client{}
+	client := &Client{
+		conn:    conn,
+		send:    make(chan []byte),
+		manager: ClientManager,
+	}
 
-    go client.readPump()
+	go client.readPump()
 }
+
+func (c *Client) readPump() {
+	defer func() {
+		c.manager.unregister <- c
+		c.conn.Close()
+	}()
+	c.conn.SetReadLimit(maxMessageSize)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+	for {
+		_, message, err := c.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				fmt.Printf("error: %v", err)
+			}
+			break
+		}
+		message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
+		c.manager.broadcast <- message
+	}
+}
+
