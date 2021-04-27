@@ -30,34 +30,9 @@ var (
 )
 
 type Client struct {
-	manager *ClientManager
-
 	// The websocket connection.
 	conn *websocket.Conn
 	send chan []byte
-}
-
-func (cm *ClientManager) run() {
-	for {
-		select {
-		case client := <-cm.register:
-			cm.clients[client] = true
-		case client := <-cm.unregister:
-			if _, ok := cm.clients[client]; ok {
-				delete(cm.clients, client)
-				close(client.send)
-			}
-		case message := <-cm.broadcast:
-			for client := range cm.clients {
-				select {
-				case client.send <- message:
-				default:
-					close(client.send)
-					delete(cm.clients, client)
-				}
-			}
-		}
-	}
 }
 
 func main() {
@@ -69,24 +44,43 @@ func main() {
 		syscall.SIGQUIT,
 		syscall.SIGKILL)
 
-	cm := newClientManager()
-	go cm.run()
-
-	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
+    upgrader.CheckOrigin = func(r *http.Request) bool {
+            origin := r.Header["Origin"]
+            if len(origin) == 0 {
+                    return true
+            }
+            u, err := url.Parse(origin[0])
+            if err != nil {
+                    return false
+            }
+            log.Info("check origin", log.Params{"rOrigin": r.Host,
+                    "uOrigin": u.Host,
+                    "check":   util.EqualASCIIFold(u.Host, r.Host)})
+            return true
+    }
 
 	http.HandleFunc("/channel", func(w http.ResponseWriter, r *http.Request) {
-		ConnectWebSocketHandler(cm, w, r)
+		ConnectWebSocketHandler(w, r)
 	})
 
+    go func() {
 	if err := http.ListenAndServe(*addr, nil); err != nil {
 		fmt.Println("Running error")
 		fmt.Println(err)
 	}
+    }()
 
+    sig := <-s
+
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+    if err := server.Shutdown(ctx); err != nil {
+            log.Err("HTTP Server shutdown error", log.Params{"err": err})
+    }
 }
 
 // api
-func ConnectWebSocketHandler(ClientManager *ClientManager, w http.ResponseWriter, r *http.Request) {
+func ConnectWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		fmt.Println("Fail to upgrade %s", err)
@@ -97,7 +91,6 @@ func ConnectWebSocketHandler(ClientManager *ClientManager, w http.ResponseWriter
 	client := &Client{
 		conn:    conn,
 		send:    make(chan []byte),
-		manager: ClientManager,
 	}
 
 	go client.readPump()
