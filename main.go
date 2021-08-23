@@ -36,13 +36,13 @@ type Client struct {
 }
 
 func main() {
-	s := make(chan os.Signal, 1)
-	signal.Notify(s,
-		syscall.SIGHUP,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-		syscall.SIGQUIT,
-		syscall.SIGKILL)
+    s := make(chan os.Signal, 1)
+    signal.Notify(s,
+        syscall.SIGHUP,
+        syscall.SIGINT,
+        syscall.SIGTERM,
+        syscall.SIGQUIT,
+        syscall.SIGKILL)
 
     upgrader.CheckOrigin = func(r *http.Request) bool {
             origin := r.Header["Origin"]
