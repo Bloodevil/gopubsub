@@ -59,9 +59,9 @@ func main() {
             return true
     }
 
-	http.HandleFunc("/channel", func(w http.ResponseWriter, r *http.Request) {
-		ConnectWebSocketHandler(w, r)
-	})
+    http.HandleFunc("/channel", func(w http.ResponseWriter, r *http.Request) {
+        ConnectWebSocketHandler(w, r)
+    })
 
     go func() {
 	if err := http.ListenAndServe(*addr, nil); err != nil {
@@ -75,7 +75,7 @@ func main() {
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
     if err := server.Shutdown(ctx); err != nil {
-            log.Err("HTTP Server shutdown error", log.Params{"err": err})
+        log.Err("HTTP Server shutdown error", log.Params{"err": err})
     }
 }
 
